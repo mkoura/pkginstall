@@ -1,0 +1,11 @@
+name="busybox"
+version="1.00-pre8_m1"
+depend="cron-files udhcp-files"
+description="BusyBox multi-call binary."
+
+inst_note="This package cannot be uninstalled!"
+rem_note=""
+
+postinst=""
+prerem=""
+postrem=""

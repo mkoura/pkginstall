@@ -1,0 +1,72 @@
+#!/bin/sh
+
+name=m-makelist
+
+[ -n "$1" ] && { cat <<EoF
+Usage: $name
+This script walks through directory hierarchy from current directory
+and create file lists for mLINUX package.
+EoF
+  exit 0; }
+
+umask 022
+
+curdir="$(pwd)"
+pkgpath="$curdir/etc/mpkgs"
+listspath="$pkgpath/lists"
+cd $pkgpath
+file="$(ls *.pkg)"
+file="${file%.pkg}.list"
+cd $curdir
+
+mkdir -p $listspath
+echo > $listspath/$file
+
+
+{ echo 'file_list <<EoF'
+  find . |sed -n '
+	{
+	  /^\.$/d
+	  s/\.\///
+	  /^lib\/modules$/d
+	  /^usr\/bin$/d
+	  /^usr\/lib$/d
+	  /^usr\/sbin$/d
+	  /^usr\/share$/d
+	  /^usr\/share\/doc$/d
+	  /^mnt\/fakeroot$/d
+	  /^mnt\/fakeroot\/etc/d
+	  /^mnt\/fakeroot\/var$/d
+	  /^mnt\/fakeroot\/var\/cache$/d
+	  /^mnt\/fakeroot\/var\/lib$/d
+	  /^mnt\/fakeroot\/var\/log$/d
+	  /^mnt\/fakeroot\/var\/run$/d
+	  /^mnt\/fakeroot\/var\/spool$/d
+	  /^etc\/rc\.d\/start\//p
+	  /^etc\/rc\.d\/stop\//p
+	  /^etc\//d
+	  /.*\//p
+	}' |sort
+
+  echo 'EoF'
+  echo
+  echo 'conf_list <<EoC'
+  find . |sed -n '
+	{
+	  /^\.$/d
+	  s/\.\///
+	  /^etc\/init\.d$/d
+	  /^etc\/mpkgs$/d
+	  /^etc\/mpkgs\/lists$/d
+	  /^etc\/rc\.d$/d
+	  /^etc\/rc\.d\/start/d
+	  /^etc\/rc\.d\/stop/d
+	  /^etc\/sysconfig$/d
+	  /^etc\//p
+	  /^mnt\/fakeroot\/etc\//p
+	}' |sort
+
+  echo 'EoC'
+} > $listspath/$file
+
+exit 0

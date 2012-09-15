@@ -1,0 +1,24 @@
+#!/bin/sh
+
+name=m-strip
+
+lib='strip --strip-unneeded lib/* usr/lib/* 2>/dev/null'
+bin='strip -R .comment -R .note --strip-unneeded bin/* sbin/* usr/bin/* usr/sbin/* 2>/dev/null'
+
+case "$1" in
+  bin)
+	eval $bin
+	;;
+  lib)
+	eval $lib
+	;;
+  h|-h|help|-help|--help|?|-?)
+	echo "Usage: $name { bin | lib | all }"
+	echo "Strip all binaries, libraries or both in subdirectories of current directory."
+	;;
+  *)
+	eval $bin
+	eval $lib
+esac
+
+exit 0

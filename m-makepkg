@@ -1,0 +1,28 @@
+#!/bin/sh
+
+name=m-makepkg
+template=~/doc/mpkg.pkg
+
+[ -n "$1" ] && { cat <<EoF
+Usage: $name
+This script automatize creation of mLINUX package.
+Run in the main directory of package.
+EoF
+  exit 0; }
+
+umask 022
+
+mkdir -p etc/mpkgs
+
+if [ -z "$(ls etc/mpkgs)" ]; then
+  [ ! -f "$template" ] \
+	&& { echo "$name: $template: does not exist"; exit 1; }
+  echo -n "Enter package name: "
+  read pkgname
+
+  sed "s/name=\"\"/name=\"$pkgname\"/" $template > etc/mpkgs/$pkgname
+fi
+
+m-relocate
+m-strip
+m-makelist

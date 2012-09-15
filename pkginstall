@@ -1,0 +1,571 @@
+#!/bin/sh
+#
+# very simple "package manager" used for custom embedded linux distribution
+# 
+# Martin Kourim <martin@kourim.net>
+
+###### Config ######
+
+chrootdir="/home/martink/programs/mlinux-i386/filesystem"
+unpackdir="/home/martink/programs/mlinux-i386/filesystem/unpack"
+lockfile="/home/martink/programs/mlinux-i386/filesystem/var/lock/pkginstall"
+#chrootdir=""
+#unpackdir="/unpack"
+#lockfile="/var/lock/pkginstall"
+
+###### Config END ######
+
+
+
+progname=pkginstall
+version="0.0.2"
+pkgpath="$chrootdir/etc/mpkgs"
+pkgfilepath="$chrootdir/etc/mpkgs/lists"
+brcode=17 # break value - to interrupt execution from config file
+
+umask 022
+
+
+#### Config files infrastructure ####
+
+# list files in package
+listfiles=0
+file_list () {
+	[ "$listfiles" -eq 1 ] && cat
+	return 0
+}
+
+# list config files in package
+listconf=0
+conf_list () {
+	[ "$listconf" -eq 1 ] && cat
+	return 0
+}
+
+#### End ####
+
+
+#### Helper functions ####
+
+# fast grep replacement
+f_string () {
+	case "$2" in *${1}*) return 0 ;; esac
+	return 1
+}
+
+#### End ####
+
+
+f_usage () {
+
+cat <<EoF
+Usage: $progname [options] [ <packagename> ... | <filename> ... ]
+Options:
+  -a: all              Show all informations about installed package.
+  -b: backup           Backup configuration files of installed package.
+  -c: check depend     Check unmet dependencies of installed package.
+  -C: check depending  Show what packages depend on installed package.
+  -d: depend           List packages necessary for installed package.
+  -D: description      Show description of installed package.
+  -f: files            List all files in installed package.
+  -F: force install    Force to install package.
+  -i: install          Install package.
+  -j: update list      Update list of installed packages.
+  -l: list             List all installed packages.
+  -n: name             Show name and version of installed package.
+  -r: remove           Remove package.
+  -s: config files     List only configuration files in installed package.
+  -S: search for file  Search for a filename from all installed packages.
+  -u: unpack only      Do not install, only unpack package.
+  -v: version          Show version of this program.
+  -h: help             Show this help.
+EoF
+}
+
+f_checkroot () {
+# DEB root
+#	[ "$(id -u)" -ne 0 ] && { echo "You have to be root!" >&2; exit 1; }
+	return 0
+}
+
+f_check () {
+	[ -z "$1" ] \
+	  && { echo "${progname}: you have to specify package name" >&2; return 2; }
+
+	[ ! -f "${pkgpath}/${1}.pkg" ] \
+	  && { echo "${progname}: ${1}: package is not installed" >&2; return 3; }
+
+	[ ! -f "${pkgfilepath}/${1}.list" ] \
+	  && { echo "${progname}: ${1}: broken package" >&2; return 3; }
+
+	return 0
+}
+
+f_check_install () {
+	[ -z "$unpackdir" -o "$unpackdir" = "/" ] && { echo "${progname}: unpackdir variable has to be set to directory other than /" >&2; exit 4; }
+
+	mkdir -p "$unpackdir" 2>/dev/null \
+	  || {  echo "${progname}: ${unpackdir} directory cannot be created" >&2
+		exit 4; }
+
+	upkgpath="$unpackdir/etc/mpkgs"
+	upkgfilepath="$unpackdir/etc/mpkgs/lists"
+
+}
+
+f_create_lock () {
+	[ -f "$lockfile" ] \
+	  && {  echo "${progname}: lock file $lockfile already exists" >&2
+		exit 1; }
+	echo > "$lockfile" 2>/dev/null \
+	  || {  echo "${progname}: lock file $lockfile cannot be created" >&2
+		exit 1; }
+}
+
+f_remove_lock () {
+	rm -f "$lockfile" 2>/dev/null \
+	  || {  echo "${progname}: lock file $lockfile cannot be removed" >&2
+		exit 1; }
+}
+
+# unset variables from package.pkg file
+f_clean () {
+	unset name
+	unset version
+	unset description
+	unset depend
+	unset inst_note
+	unset rem_note
+	unset postinst
+	unset prerem
+	unset postrem
+}
+
+# install "package"
+f_install () {
+	[ -z "$1" ] \
+	  && {  echo "${progname}: you have to specify package location" >&2
+		return 2; }
+
+	cd "$origdir"
+	[ ! -f "$1" ] \
+	  && { echo "${progname}: ${1}: archive not found" >&2; return 4; }
+
+	# extract package name from archive name
+	local wbase="${1##*/}"
+	local base="${wbase%.tar.gz}"
+	local base="${base%%_*}"
+	cd "$(dirname $1)"
+	local dest="$(pwd)"
+
+	cd "$unpackdir"
+	
+	# checking if package is already installed
+	local installed=no
+	if [ -f "${pkgpath}/${base}.pkg" ]
+	then
+	  [ "$force" != "yes" ] && { cat >&2 <<EoF
+WARNING!
+ It seems that "$base" is already installed.
+ If you want to upgrade to a newer version, you should remove this
+ version first.
+ If you want to install it anyway, you can do so by using "-F" option
+ instead of "-i".
+EoF
+	  return 5; }
+
+	  # now we know this is not normal installation
+	  # package is already installed and we chose
+	  # to install it again
+	  local installed=yes
+	fi
+
+	echo
+	echo "Installing \"$base\" package... "
+
+	[ "$unpack_only" != "yes" ] && rm -Rf $unpackdir/*
+
+	# unpacking
+	tar -xzpf $dest/$wbase \
+	  || { echo "$progname: $wbase: unpacking failed" >&2
+	       echo "Installation failed!" >&2
+	       return 6
+	     }
+
+	[ "$unpack_only" = "yes" ] \
+	  && { echo "Unpacked successfully"; return 0; }
+
+	# test if we can copy files
+	if [ "$force" != "yes" ]; then
+	  for i in $(find . ! -type d) ; do
+	    [ -e "${chrootdir}/${i}" ] \
+	      && { echo "${progname}: conflict with file from already installed package:" >&2
+		   f_search "${i#./}" >&2
+		   echo "Installation failed!" >&2
+		   rm -Rf ${unpackdir}/*
+		   return 6
+		 }
+	  done
+	fi
+
+	# move directories (with its content) from unpack dir to real location
+	# when they has not exist yet
+	for i in $(find . -type d) ; do
+	  [ ! -d "${chrootdir}/${i}" ] \
+	    && mv ${unpackdir}/${i} ${chrootdir}/${i%/*}/
+	done
+
+	# move normal files from unpack dir to real location
+	for i in $(find . ! -type d) ; do
+	  mv ${unpackdir}/${i} ${chrootdir}/${i}
+	done
+
+	rm -Rf $unpackdir/*
+
+	# if we are forcing installation, we do not want to write
+	# package name again
+	[ "$installed" = "no" ] \
+	  && echo " $base " >> $pkgpath/packages
+
+	f_clean
+	. $pkgpath/$base.pkg
+
+	[ -n "$postinst" ] && { eval $postinst \
+	  || echo "${progname}: execution of postinstall command failed" >&2; }
+
+	# checking unmet dependencies
+	local unmet=""
+	for i in $depend; do
+	  f_string " $i " "$(cat ${pkgpath}/packages)" \
+	    || local unmet="$unmet $i"
+	done
+
+	if [ -n "$unmet" ]; then
+	  echo
+	  echo "*** Unmet dependencies for \"$base\" package ***"
+	  echo "You should install following packages:"
+	  for i in $unmet; do echo "$i"; done
+	fi
+
+	echo
+	echo "Installation successfull!"
+
+	[ -n "$inst_note" ] && { echo; echo "$inst_note"; }
+
+	return 0
+}
+
+f_remove () {
+	f_check "$1" || return $?
+	f_clean
+	. "${pkgpath}/${1}.pkg"
+
+	if [ -n "$prerem" ]; then
+	  eval $prerem
+	  local retval="$?"
+	  [ "$retval" -eq "$brcode" ] && return 0
+	  [ "$retval" -ne 0 ] \
+	    && echo "$progname: execution of prerem command failed" >&2
+	fi
+
+	local listfiles=1
+	local listconf=1
+	local rmfail=""
+	local realrmfail=""
+
+	echo
+	echo "Removing \"$1\" package... "
+	for i in $(. $tempdir/$1.list) ; do
+	  rm -f $chrootdir/$i 2>/dev/null || local rmfail="$rmfail $i"
+	done
+
+	for i in $rmfail; do
+	  rmdir $chrootdir/$i 2>/dev/null || local realrmfail="$realrmfail $i"
+	done
+
+	for i in $realrmfail; do
+	  [ ! -d "$i" ] && echo "${progname}: ${i}: removing failed"
+	done
+
+	[ -n "$postrem" ] && { eval $postrem \
+	  || echo "${progname}: execution of postrem command failed" >&2; }
+
+	echo
+	echo "Removal successfull!"
+
+	[ -n "$rem_note" ] && { echo; echo "$rem_note"; }
+
+	return 0
+}
+
+f_recreate () {
+	cd "$pkgpath"
+	for i in *.pkg; do echo " ${i%.pkg} "; done > "$pkgpath/packages"
+	return 0
+}
+
+# check unmet dependencies of "package"
+f_checkdep () {
+	f_check "$1" || return $?
+	f_clean
+	. "${pkgpath}/${1}.pkg"
+
+	for i in $depend; do
+	  f_string " $i " "$(cat ${pkgpath}/packages)" || echo "$i"
+	done
+
+	return 0
+}
+
+# check what packages depend on "package"
+f_checkselfdep () {
+	[ -z "$1" ] \
+	  && {  echo "${progname}: you have to specify package name" >&2
+		return 2
+	     }
+
+	cd "$pkgpath"
+	grep -H "depend=.*$1" *.pkg |sed 's/\.pkg.*//'
+
+	return 0
+}
+
+# save config files of "package"
+f_saveconfig () {
+	f_check "$1" || return $?
+	f_clean
+	. "${pkgpath}/${1}.pkg"
+
+	local backdir=/tmp/m-conffiles
+	local pkgdir="${name}-conf_${version}"
+
+	mkdir -p "$backdir" || return 7
+# DEB root
+#	chown root:root $backdir
+	chmod 0755 $backdir
+
+	# if we are not able to create '$pkgdir' now, the directory
+	# already exists. Erase content of this directory.
+	mkdir "${backdir}/${pkgdir}" 2>/dev/null || rm -Rf ${backdir}/${pkgdir}/*
+
+	local nofiles=0
+	local listconf=1
+	for i in $(. ${pkgfilepath}/${1}.list); do
+	  [ -f "$chrootdir/$i" ] \
+	    && { cp -a "${chrootdir}/${i}" "${backdir}/${pkgdir}"
+		 LC_ALL=C LANG=C \
+		 ls -al "${chrootdir}/${i}" >> "${backdir}/${pkgdir}/files_info"
+		 local nofiles=1
+	       }
+	done
+
+	[ "$nofiles" -eq 0 ] \
+	  && { rm -Rf ${backdir}/${pkgdir}
+	       echo "${progname}: no config files to save" >&2
+	       return 0
+	     }
+
+	echo "${progname}: config files saved to ${backdir}/${pkgdir}"
+
+	return 0
+}
+
+# search for a filename from all installed packages
+f_search () {
+	[ -z "$1" ] \
+	  && { echo "${progname}: no filename was specified" >&2; return 2; }
+
+	local fname="${1##/}"
+	local fname="${fname##/}"
+	#local fname="$(echo "$1" |sed 's/^\/*//')"
+	local fname1="/$fname"
+	local fname2="${fname1%/*}"
+	[ -z "$fname2" ] && local fname="$fname1"
+
+	cd "$pkgfilepath"
+	fgrep -H "$fname" *.list |sed 's/\.list:/: \//' |fgrep ':' \
+	  || { echo "${progname}: ${1}: not found" >&2; return 1; }
+
+	return 0
+}
+
+# show all info about "package"
+f_all () {
+	f_check "$1" || return $?
+	f_clean
+	. "${pkgpath}/${1}.pkg"
+
+	echo
+	echo "name: $name"
+	echo "version: $version"
+	echo "dependencies: $depend"
+	echo "description: $description"
+
+	return 0
+}
+
+# list packages that "package" depends on
+f_depend () {
+	f_check "$1" || return $?
+	f_clean
+	. "${pkgpath}/${1}.pkg"
+
+	for i in $depend; do echo "$i"; done
+
+	return 0
+}
+
+# show brief description of "package"
+f_description () {
+	f_check "$1" || return $?
+	f_clean
+	. "${pkgpath}/${1}.pkg"
+
+	echo "description: $description"
+
+	return 0
+}
+
+# list all files in installed package
+f_filelist () {
+	f_check "$1" || return $?
+	f_clean
+
+	echo
+	for i in $(. ${pkgfilepath}/${1}.list); do echo "/${i}"; done |sort
+
+	return 0
+}
+
+# show package name
+f_name () {
+	f_check "$1" || return $?
+	f_clean
+	. "${pkgpath}/${1}.pkg"
+
+	echo "${name}_${version}"
+
+	return 0
+}
+
+f_loop () {
+	[ -z "$param" ] && { $1 || return $?; }
+
+	for i in $param; do
+	  $1 $i
+	done
+
+	return $?
+}
+
+action="$1"
+[ -n "$action" ] && shift
+param="$@"
+
+origdir="$(pwd)"
+
+case "$action" in 
+  -a | a )
+	f_loop f_all
+	;;
+
+  -b | b )
+	f_checkroot
+	f_loop f_saveconfig
+	;;
+
+  -c | c )
+	f_loop f_checkdep
+	;;
+
+  -C | C )
+	f_loop f_checkselfdep
+	;;
+
+  -d | d )
+	f_loop f_depend
+	;;
+
+  -D | D )
+	f_loop f_description
+	;;
+
+  -f | f )
+	listfiles=1
+	listconf=1
+	f_loop f_filelist
+	;;
+
+  -F | F )
+	f_checkroot
+	f_check_install
+	f_create_lock
+	force=yes
+	f_loop f_install
+	f_remove_lock
+	;;
+
+  -i | i )
+	f_checkroot
+	f_check_install
+	f_create_lock
+	force=no
+	f_loop f_install
+	f_remove_lock
+	;;
+
+  -j | j )
+	f_checkroot
+	f_create_lock
+	f_recreate
+	f_remove_lock
+	;;
+
+  -l | l )
+	cat $pkgpath/packages |sort
+	;;
+
+  -n | n )
+	f_loop f_name
+	;;
+
+  -r | r )
+	f_checkroot
+	f_create_lock
+	f_loop f_remove
+	f_recreate
+	f_remove_lock
+	;;
+
+  -s | s )
+	listconf=1
+	f_loop f_filelist
+	;;
+
+  -S | S )
+	f_loop f_search
+	;;
+
+  -u | u )
+	f_checkroot
+	f_create_lock
+	force=yes
+	unpack_only=yes
+	f_loop f_install
+	f_remove_lock
+	;;
+
+  -v | v | --version )
+	echo "$version"
+	;;
+
+  -h | h | -? | ? | --help | -help | help )
+	f_usage
+	;;
+
+  *  )
+	f_usage >&2
+	exit 1
+esac
+
+exit $?

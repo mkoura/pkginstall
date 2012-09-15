@@ -1,0 +1,20 @@
+#!/bin/sh
+
+name=m-relocate
+
+[ -n "$1" ] && { cat <<EoF
+Usage: $name
+This script change directory hierarchy inside current directory
+to fit directory sctructure of mLINUX package.
+EoF
+  exit 0; }
+
+umask 022
+
+[ -d var ] && { mkdir -p fakeroot; mv var fakeroot/; }
+
+# co ma co delat v balicku tmp?
+[ -d tmp ] && rm -Rf tmp
+[ -d fakeroot/var/tmp ] && rm -Rf fakeroot/var/tmp
+
+exit 0
